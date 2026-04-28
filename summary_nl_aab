@@ -1,0 +1,186 @@
+-- Очистка и создание финальной таблицы
+DROP TABLE IF EXISTS AlexeyReport.summary_nl_aab;
+
+-- Шаг 1: Создаём временную таблицу с детальными данными
+DROP TABLE IF EXISTS tmp_detail;
+
+CREATE TEMPORARY TABLE tmp_detail AS
+SELECT 
+    COALESCE(t.serv, a.serv) AS serv,
+    COALESCE(t.type, a.type) AS type,
+    COALESCE(t.city, a.city) AS city,
+    COALESCE(t.month, a.month) AS month,
+    COALESCE(t.month_num, a.month_num) AS month_num,
+    COALESCE(t.year, a.year) AS year,
+    t.update_at1,
+    COALESCE(t.ottok, 0) AS ottok,
+    COALESCE(tn.ottok_notauto, 0) AS ottok_notauto,
+    p.plan,
+    a.abonbase,
+    ROUND(COALESCE(t.ottok, 0) / NULLIF(p.plan, 0), 4) AS ottok_plan_ratio,
+    ROUND(COALESCE(t.ottok, 0) / NULLIF(a.abonbase, 0), 4) AS ottok_abonbase_ratio,
+    CASE 
+        WHEN CAST(a.year AS INT) = YEAR(CURDATE()) AND a.month_num = MONTH(CURDATE()) THEN
+            ROUND(
+                (COALESCE(tn.ottok_notauto, 0) / NULLIF(DAY(CURDATE()) - 1, 0)) 
+                * DAY(LAST_DAY(CURDATE())) 
+                + (COALESCE(t.ottok, 0) - COALESCE(tn.ottok_notauto, 0)),
+                0
+            )
+        ELSE 
+            COALESCE(t.ottok, 0)
+    END AS forecast_ottok,
+    ROUND(
+        CASE 
+            WHEN CAST(a.year AS INT) = YEAR(CURDATE()) AND a.month_num = MONTH(CURDATE()) THEN
+                ROUND(
+                    (COALESCE(tn.ottok_notauto, 0) / NULLIF(DAY(CURDATE()) - 1, 0)) 
+                    * DAY(LAST_DAY(CURDATE())) 
+                    + (COALESCE(t.ottok, 0) - COALESCE(tn.ottok_notauto, 0)),
+                    0
+                )
+            ELSE 
+                COALESCE(t.ottok, 0)
+        END / NULLIF(p.plan, 0), 4
+    ) AS forecast_plan_ratio
+FROM (
+    SELECT 
+        city,
+        CASE WHEN serv IN ('ТВ', 'КТВ') THEN 'КТВ' ELSE serv END AS serv,
+        CAST(month AS INT) AS month_num,
+        CASE month
+            WHEN '01' THEN 'Январь' WHEN '02' THEN 'Февраль' WHEN '03' THEN 'Март'
+            WHEN '04' THEN 'Апрель' WHEN '05' THEN 'Май' WHEN '06' THEN 'Июнь'
+            WHEN '07' THEN 'Июль' WHEN '08' THEN 'Август' WHEN '09' THEN 'Сентябрь'
+            WHEN '10' THEN 'Октябрь' WHEN '11' THEN 'Ноябрь' WHEN '12' THEN 'Декабрь'
+        END AS month,
+        year,
+        CASE 
+            WHEN Type = 'B2C' THEN 'Физ лицо'
+            WHEN Type = 'B2B' THEN 'Юр лицо'
+            WHEN Type = 'B2U' THEN 'Предприятия холдинга'
+        END AS type,
+        SUM(CAST(Value AS INT)) AS abonbase
+    FROM AlexeyReport.aa1_summ_monthly
+    WHERE serv IN ('Интернет', 'КТВ', 'ТВ', 'Телефония', 'ОТТ')
+      AND city NOT IN ('Ревда', 'Кольчугино')
+    GROUP BY city, CASE WHEN serv IN ('ТВ', 'КТВ') THEN 'КТВ' ELSE serv END, month, year, Type
+) a
+LEFT JOIN (
+    SELECT 'Интернет' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_int) AS ottok
+    FROM AlexeyReport.summary_nl GROUP BY type, city, month, month_num, year, update_at1
+    UNION ALL
+    SELECT 'КТВ' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_ktv) AS ottok
+    FROM AlexeyReport.summary_nl GROUP BY type, city, month, month_num, year, update_at1
+    UNION ALL
+    SELECT 'Телефония' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_tel) AS ottok
+    FROM AlexeyReport.summary_nl GROUP BY type, city, month, month_num, year, update_at1
+    UNION ALL
+    SELECT 'ОТТ' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_ott) AS ottok
+    FROM AlexeyReport.summary_nl GROUP BY type, city, month, month_num, year, update_at1
+) t ON a.city = t.city AND a.serv = t.serv AND a.month_num = t.month_num AND a.year = t.year AND a.type = t.type
+LEFT JOIN (
+    SELECT 'Интернет' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_int) AS ottok_notauto
+    FROM AlexeyReport.summary_nl WHERE auto != 1 GROUP BY type, city, month, month_num, year, update_at1
+    UNION ALL
+    SELECT 'КТВ' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_ktv) AS ottok_notauto
+    FROM AlexeyReport.summary_nl WHERE auto != 1 GROUP BY type, city, month, month_num, year, update_at1
+    UNION ALL
+    SELECT 'Телефония' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_tel) AS ottok_notauto
+    FROM AlexeyReport.summary_nl WHERE auto != 1 GROUP BY type, city, month, month_num, year, update_at1
+    UNION ALL
+    SELECT 'ОТТ' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_ott) AS ottok_notauto
+    FROM AlexeyReport.summary_nl WHERE auto != 1 GROUP BY type, city, month, month_num, year, update_at1
+) tn ON a.city = tn.city AND a.serv = tn.serv AND a.month_num = tn.month_num AND a.year = tn.year AND a.type = tn.type
+LEFT JOIN (
+    SELECT 
+        city,
+        CASE WHEN service IN ('ТВ', 'КТВ') THEN 'КТВ' ELSE service END AS serv,
+        CASE month
+            WHEN 'Январь' THEN 1 WHEN 'Февраль' THEN 2 WHEN 'Март' THEN 3
+            WHEN 'Апрель' THEN 4 WHEN 'Май' THEN 5 WHEN 'Июнь' THEN 6
+            WHEN 'Июль' THEN 7 WHEN 'Август' THEN 8 WHEN 'Сентябрь' THEN 9
+            WHEN 'Октябрь' THEN 10 WHEN 'Ноябрь' THEN 11 WHEN 'Декабрь' THEN 12
+        END AS month_num,
+        year,
+        CASE WHEN type = 'B2C' THEN 'Физ лицо' WHEN type = 'B2B' THEN 'Юр лицо' WHEN type = 'B2U' THEN 'Предприятия холдинга' END AS type,
+        SUM(value) AS plan
+    FROM AlexeyReport.outflow
+    WHERE service IN ('Интернет', 'КТВ', 'ТВ', 'Телефония', 'ОТТ')
+    GROUP BY city, CASE WHEN service IN ('ТВ', 'КТВ') THEN 'КТВ' ELSE service END, month, year, type
+) p ON a.city = p.city AND a.serv = p.serv AND a.month_num = p.month_num AND a.year = p.year AND a.type = p.type;
+
+-- Шаг 2: Создаём вторую временную таблицу и наполняем детальными данными
+DROP TABLE IF EXISTS tmp_final;
+
+CREATE TEMPORARY TABLE tmp_final AS
+SELECT * FROM tmp_detail;
+
+-- Шаг 3: "!Все города"
+INSERT INTO tmp_final
+SELECT 
+    serv, type, '!Все города' AS city, month, month_num, year, NULL,
+    SUM(ottok), SUM(ottok_notauto), SUM(plan), SUM(abonbase),
+    ROUND(SUM(ottok) / NULLIF(SUM(plan), 0), 4),
+    ROUND(SUM(ottok) / NULLIF(SUM(abonbase), 0), 4),
+    CASE WHEN CAST(year AS INT) = YEAR(CURDATE()) AND month_num = MONTH(CURDATE()) 
+        THEN ROUND((SUM(ottok_notauto) / NULLIF(DAY(CURDATE()) - 1, 0)) * DAY(LAST_DAY(CURDATE())) + (SUM(ottok) - SUM(ottok_notauto)), 0)
+        ELSE SUM(ottok) END,
+    ROUND(CASE WHEN CAST(year AS INT) = YEAR(CURDATE()) AND month_num = MONTH(CURDATE()) 
+        THEN ROUND((SUM(ottok_notauto) / NULLIF(DAY(CURDATE()) - 1, 0)) * DAY(LAST_DAY(CURDATE())) + (SUM(ottok) - SUM(ottok_notauto)), 0)
+        ELSE SUM(ottok) END / NULLIF(SUM(plan), 0), 4)
+FROM tmp_detail
+WHERE city != '!Все города' AND serv != 'Все услуги' AND type != 'Все лица'
+GROUP BY serv, type, month, month_num, year;
+
+-- Шаг 4: "Все услуги" (читаем из tmp_final, где уже есть деталка + !Все города)
+INSERT INTO tmp_final
+SELECT 
+    'Все услуги' AS serv, type, city, month, month_num, year, NULL,
+    SUM(ottok), SUM(ottok_notauto), SUM(plan), SUM(abonbase),
+    ROUND(SUM(ottok) / NULLIF(SUM(plan), 0), 4),
+    ROUND(SUM(ottok) / NULLIF(SUM(abonbase), 0), 4),
+    CASE WHEN CAST(year AS INT) = YEAR(CURDATE()) AND month_num = MONTH(CURDATE()) 
+        THEN ROUND((SUM(ottok_notauto) / NULLIF(DAY(CURDATE()) - 1, 0)) * DAY(LAST_DAY(CURDATE())) + (SUM(ottok) - SUM(ottok_notauto)), 0)
+        ELSE SUM(ottok) END,
+    ROUND(CASE WHEN CAST(year AS INT) = YEAR(CURDATE()) AND month_num = MONTH(CURDATE()) 
+        THEN ROUND((SUM(ottok_notauto) / NULLIF(DAY(CURDATE()) - 1, 0)) * DAY(LAST_DAY(CURDATE())) + (SUM(ottok) - SUM(ottok_notauto)), 0)
+        ELSE SUM(ottok) END / NULLIF(SUM(plan), 0), 4)
+FROM tmp_final
+WHERE serv != 'Все услуги' AND type != 'Все лица'
+GROUP BY type, city, month, month_num, year;
+
+-- Шаг 5: "Все лица" (читаем из tmp_final, где уже есть деталка + !Все города + Все услуги)
+INSERT INTO tmp_final
+SELECT 
+    serv, 'Все лица' AS type, city, month, month_num, year, NULL,
+    SUM(ottok), SUM(ottok_notauto), SUM(plan), SUM(abonbase),
+    ROUND(SUM(ottok) / NULLIF(SUM(plan), 0), 4),
+    ROUND(SUM(ottok) / NULLIF(SUM(abonbase), 0), 4),
+    CASE WHEN CAST(year AS INT) = YEAR(CURDATE()) AND month_num = MONTH(CURDATE()) 
+        THEN ROUND((SUM(ottok_notauto) / NULLIF(DAY(CURDATE()) - 1, 0)) * DAY(LAST_DAY(CURDATE())) + (SUM(ottok) - SUM(ottok_notauto)), 0)
+        ELSE SUM(ottok) END,
+    ROUND(CASE WHEN CAST(year AS INT) = YEAR(CURDATE()) AND month_num = MONTH(CURDATE()) 
+        THEN ROUND((SUM(ottok_notauto) / NULLIF(DAY(CURDATE()) - 1, 0)) * DAY(LAST_DAY(CURDATE())) + (SUM(ottok) - SUM(ottok_notauto)), 0)
+        ELSE SUM(ottok) END / NULLIF(SUM(plan), 0), 4)
+FROM tmp_final
+WHERE type != 'Все лица'
+GROUP BY serv, city, month, month_num, year;
+
+-- Шаг 6: Создаём финальную таблицу
+CREATE TABLE AlexeyReport.summary_nl_aab AS
+SELECT * FROM tmp_final
+ORDER BY 
+    CASE WHEN city = '!Все города' THEN 1 ELSE 0 END,
+    city, 
+    year, 
+    month_num, 
+    CASE WHEN serv = 'Все услуги' THEN 1 ELSE 0 END,
+    serv, 
+    CASE WHEN type = 'Все лица' THEN 1 ELSE 0 END,
+    type, 
+    update_at1;
+
+-- Шаг 7: Дропаем временные таблицы
+DROP TABLE IF EXISTS tmp_detail;
+DROP TABLE IF EXISTS tmp_final;
