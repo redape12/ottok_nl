@@ -1,0 +1,211 @@
+CREATE DEFINER=`myuser`@`%` PROCEDURE `summary_nl`()
+BEGIN
+    DROP TABLE IF EXISTS AlexeyReport.summary_nl;
+    CREATE TABLE AlexeyReport.summary_nl AS
+SELECT * FROM (
+    SELECT 
+        cid, status, status_date, dtn, dney, fio, title, datedog, dog, tariff, dt1, dt2, ddt1, ddt2, serv, address, contact, summa, sktv, 
+        gorod AS city_original,
+        comm, nach, prast, pzakr, ogr, tel_point, eid, out_service, update_at1, update_at2, upd, ap_int, ap_ktv, ap_tel, ap_ott, ap_aot, ap,
+        
+        -- serv_int
+        CASE 
+            WHEN (
+                (serv = 'Интернет' 
+                 AND (prast <> 'Соц: Переоформление по заявлению' OR prast IS NULL) 
+                 AND prast <> 'Эк: Истечение срока действия договора/контракта'
+                 AND NOT (COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = ''))
+                OR (serv = 'Пакет' 
+                    AND pzakr = 'Расформирование пакета, оформление договора на моно услугу КТВ'
+                    AND NOT (COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = ''))
+                OR (serv = 'Пакет' 
+                    AND pzakr <> 'Расформирование пакета, оформление договора на моно услугу Интернет' 
+                    AND (prast <> 'Соц: Переоформление по заявлению' OR prast IS NULL)
+                    AND NOT (COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = ''))
+            ) THEN 
+                CASE 
+                    WHEN ap_int > 0 THEN 1
+                    WHEN ap_int IS NULL OR ap_int = 0 THEN 1
+                    ELSE 0 
+                END
+            ELSE 0 
+        END AS serv_int,
+        
+        -- serv_ktv
+        CASE 
+            WHEN (
+                (serv = 'КТВ' 
+                 AND (prast <> 'Соц: Переоформление по заявлению' OR prast IS NULL) 
+                 AND prast <> 'Эк: Истечение срока действия договора/контракта'
+                 AND NOT (COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = ''))
+                OR (serv = 'Пакет' 
+                    AND pzakr = 'Расформирование пакета, оформление договора на моно услугу Интернет'
+                    AND NOT (COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = ''))
+                OR (serv = 'Пакет' 
+                    AND pzakr <> 'Расформирование пакета, оформление договора на моно услугу КТВ' 
+                    AND (prast <> 'Соц: Переоформление по заявлению' OR prast IS NULL)
+                    AND NOT (COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = ''))
+            ) THEN 
+                CASE 
+                    WHEN ap_ktv > 0 THEN 1
+                    WHEN ap_ktv IS NULL OR ap_ktv = 0 THEN 1
+                    ELSE 0 
+                END
+            ELSE 0 
+        END AS serv_ktv,
+        
+        -- serv_tel
+        CASE 
+            WHEN (
+                serv = 'Телефония' 
+                AND (prast <> 'Соц: Переоформление по заявлению' OR prast IS NULL) 
+                AND prast <> 'Эк: Истечение срока действия договора/контракта'
+                AND NOT (COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = '')
+            ) THEN 
+                CASE 
+                    WHEN ap_tel > 0 THEN 1
+                    WHEN ap_tel IS NULL OR ap_tel = 0 THEN 1
+                    ELSE 0 
+                END
+            ELSE 0 
+        END AS serv_tel,
+        
+        -- serv_ott
+        CASE 
+            WHEN (
+                serv = 'ОТТ' 
+                AND NOT (COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = '')
+            ) THEN 
+                CASE 
+                    WHEN ap_ott > 0 THEN 1
+                    WHEN ap_ott IS NULL OR ap_ott = 0 THEN 1
+                    ELSE 0 
+                END
+            ELSE 0 
+        END AS serv_ott,
+        
+        -- serv_aot
+        CASE 
+            WHEN ap_aot > 0 THEN 1
+            ELSE 0 
+        END AS serv_aot,
+        
+        -- prast_pzakr
+        CASE 
+            WHEN prast IS NOT NULL AND prast != '' THEN prast
+            WHEN pzakr IS NOT NULL AND pzakr != '' THEN pzakr
+            ELSE 'Причина не указана'
+        END AS prast_pzakr,
+        
+        -- prast_norm
+        CASE 
+            WHEN COALESCE(prast, pzakr, '') IN (
+                'Расторжение в одностороннем порядке по дебиторской задолженности', 'Расформирование пакета, актуализация услуг договора',
+                'С: Переход к конкуренту. Альтернативные источники услуг', 'С: Переход к конкуренту. Качество сервиса',
+                'С: Переход к конкуренту. Наполнение услуги (контент, технология подключения, доп сервисы)',
+                'С: Переход к конкуренту. Наполнение услуги (контент, технология подключения, доп. сервисы)', 'С: Переход к конкуренту. Цена',
+                'Соц: Смена места жительства (есть активный договор)', 'Соц: Отсутствие контакта с Абонентом',
+                'Соц: Переезд на новый адрес (есть активный договор)', 'Соц: Переоформление по заявлению', 'Тех: Качество услуги',
+                'Тех: Неисправность не устранили или долго устраняли', 'Тех: Нет/не работает конечное оборудование (ТВ, планшет, ноутбук, ПК, смартфон и тд)',
+                'Тех: Несвоевременное/некачественное первичное подключение', 'Тех: Услуга периодически не работает (частые обрывы)',
+                '[АРХИВ]С: Переход к конкуренту. Качество услуги', '[АРХИВ]Тех: Интернет периодически не работает',
+                '[АРХИВ]Тех: Не устраивает качество КТВ', '[АРХИВ]Тех: Скорость соединения ниже заявленной в тарифном плане',
+                '[АРХИВ]Соц: Не планирует пользоваться более срока временной приостановки', '[АРХИВ]Соц: Сезонное подключение',
+                '[АРХИВ]Соц: Услуга не актуальна (альтернативные источники услуг)', '[АРХИВ]Заключение нового договора (оформление в пакет)',
+                '[АРХИВ]Одн: Расторжение в одностороннем порядке по дебиторской задолженности',
+                '[АРХИВ]Одн: Расторжение в одностороннем порядке по причине - простой более 6 месяцев',
+                'Расторжение в одностороннем порядке по причине - простой более 6 месяцев', '[АРХИВ]С: Не устраивает набор ТВ каналов',
+                '[АРХИВ]С: Не устраивает фиктивный статус/начисления', '[АРХИВ]С: Несвоевременное первичное подключение',
+                '[АРХИВ]Эк: Пользование альтернативными телефону средствами (мобильный, skype )'
+            ) THEN 'Управляемый отток'
+            WHEN COALESCE(prast, pzakr, '') IN (
+                'Автоматическое расформирование услуги Интернет', 'Соц: Смена собственника',
+                'Соц: Переезд в зону отсутствия технической возможности', 'Эк: Истечение срока действия договора/контракта',
+                'Эк: Финансовые проблемы', '[АРХИВ]Эк: Повышение абонентской платы',
+                '[АРХИВ]Эк: Подключение по акции, акция закончилась, после дорого платить',
+                '[АРХИВ]Эк: Исполнение обязательств по договору/контракту', '[АРХИВ]Соц: Переезд в другой город'
+            ) THEN 'Условно управляемый отток'
+            WHEN COALESCE(prast, pzakr, '') IN (
+                'Соц: Расторжение договора на основании свидетельства о смерти', 'Эк: Ликвидация предприятия',
+                '[АРХИВ]Эк: Ликвидация предприятия'
+            ) THEN 'Неуправляемый отток'
+            WHEN COALESCE(prast, '') = '' AND COALESCE(pzakr, '') = '' THEN 'Неуправляемый отток'
+            ELSE 'Прочее'
+        END AS prast_norm,
+        
+        -- month_num, month, year
+        MONTH(update_at1) AS month_num,
+        CASE 
+            WHEN MONTH(update_at1) = 1 THEN 'Январь' WHEN MONTH(update_at1) = 2 THEN 'Февраль'
+            WHEN MONTH(update_at1) = 3 THEN 'Март' WHEN MONTH(update_at1) = 4 THEN 'Апрель'
+            WHEN MONTH(update_at1) = 5 THEN 'Май' WHEN MONTH(update_at1) = 6 THEN 'Июнь'
+            WHEN MONTH(update_at1) = 7 THEN 'Июль' WHEN MONTH(update_at1) = 8 THEN 'Август'
+            WHEN MONTH(update_at1) = 9 THEN 'Сентябрь' WHEN MONTH(update_at1) = 10 THEN 'Октябрь'
+            WHEN MONTH(update_at1) = 11 THEN 'Ноябрь' WHEN MONTH(update_at1) = 12 THEN 'Декабрь'
+        END AS month,
+        YEAR(update_at1) AS year,
+        
+        -- city
+        CASE 
+            WHEN gorod LIKE '%Верхняя Пышма%' THEN 'Верхняя Пышма'
+            WHEN gorod LIKE '%Серов%' THEN 'Серов'
+            WHEN gorod LIKE '%Екатеринбург%' THEN 'Екатеринбург'
+            WHEN gorod LIKE '%Красноуральск%' THEN 'Красноуральск'
+            WHEN gorod LIKE '%Верх-Нейвинск%' THEN 'Верх-Нейвинский'
+            WHEN gorod LIKE '%Краснотурьинск%' THEN 'Краснотурьинск'
+            WHEN gorod LIKE '%Рубцовск%' THEN 'Рубцовск'
+            WHEN gorod LIKE '%Кировград%' THEN 'Кировград'
+            WHEN gorod LIKE '%Мытищи%' THEN 'Москва'
+            WHEN gorod LIKE '%Москва%' THEN 'Москва'
+            WHEN gorod LIKE '%Парк-Телеком%' THEN 'Парк-Телеком'
+        END AS city,
+        
+        -- type
+        CASE 
+            WHEN gorod LIKE '%Предприятия Холдинга%' THEN 'Предприятия Холдинга'
+            WHEN title LIKE '1%' THEN 'Юр лицо'
+            WHEN title LIKE '2%' THEN 'Физ лицо'
+        END AS type,
+        
+        -- auto
+        CASE 
+            WHEN prast LIKE '%Автоматическое расформирование услуги%' THEN 1
+            ELSE 0
+        END AS auto,
+        
+        -- address_norm
+        TRIM(TRAILING ',' FROM
+            CASE
+                WHEN LOCATE(', д.', address) > 0 THEN
+                    CONCAT(
+                        TRIM(SUBSTRING_INDEX(address, ', д.', 1)),
+                        ', д.',
+                        TRIM(
+                            SUBSTRING_INDEX(
+                                SUBSTRING_INDEX(address, ', д.', -1),
+                                ',',
+                                1
+                            )
+                        )
+                    )
+                WHEN LOCATE(', дом', address) > 0 THEN
+                    CONCAT(
+                        TRIM(SUBSTRING_INDEX(address, ', дом', 1)),
+                        ', дом',
+                        TRIM(
+                            SUBSTRING_INDEX(
+                                SUBSTRING_INDEX(address, ', дом', -1),
+                                ',',
+                                1
+                            )
+                        )
+                    )
+                ELSE address
+            END
+        ) AS address_norm
+        
+    FROM AlexeyReport.summary
+) AS t
+WHERE NOT (serv_int = 0 AND serv_ktv = 0 AND serv_tel = 0 AND serv_ott = 0 AND serv_aot = 0)
+  AND city_original != 'Кольчугино';
+END
