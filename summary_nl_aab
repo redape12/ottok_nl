@@ -63,34 +63,34 @@ FROM (
         SUM(CAST(Value AS INT)) AS abonbase
     FROM AlexeyReport.aa1_summ_monthly
     WHERE serv IN ('Интернет', 'КТВ', 'ТВ', 'Телефония', 'ОТТ')
-      AND city NOT IN ('Ревда', 'Кольчугино')
+      AND city NOT IN ('Ревда', 'Кольчугино', 'Парк-Телеком')
     GROUP BY city, CASE WHEN serv IN ('ТВ', 'КТВ') THEN 'КТВ' ELSE serv END, month, year, Type
 ) a
 LEFT JOIN (
     SELECT 'Интернет' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_int) AS ottok
-    FROM AlexeyReport.summary_nl GROUP BY type, city, month, month_num, year, update_at1
+    FROM AlexeyReport.summary_nl WHERE city != 'Парк-Телеком' GROUP BY type, city, month, month_num, year, update_at1
     UNION ALL
     SELECT 'КТВ' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_ktv) AS ottok
-    FROM AlexeyReport.summary_nl GROUP BY type, city, month, month_num, year, update_at1
+    FROM AlexeyReport.summary_nl WHERE city != 'Парк-Телеком' GROUP BY type, city, month, month_num, year, update_at1
     UNION ALL
     SELECT 'Телефония' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_tel) AS ottok
-    FROM AlexeyReport.summary_nl GROUP BY type, city, month, month_num, year, update_at1
+    FROM AlexeyReport.summary_nl WHERE city != 'Парк-Телеком' GROUP BY type, city, month, month_num, year, update_at1
     UNION ALL
     SELECT 'ОТТ' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_ott) AS ottok
-    FROM AlexeyReport.summary_nl GROUP BY type, city, month, month_num, year, update_at1
+    FROM AlexeyReport.summary_nl WHERE city != 'Парк-Телеком' GROUP BY type, city, month, month_num, year, update_at1
 ) t ON a.city = t.city AND a.serv = t.serv AND a.month_num = t.month_num AND a.year = t.year AND a.type = t.type
 LEFT JOIN (
     SELECT 'Интернет' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_int) AS ottok_notauto
-    FROM AlexeyReport.summary_nl WHERE auto != 1 GROUP BY type, city, month, month_num, year, update_at1
+    FROM AlexeyReport.summary_nl WHERE auto != 1 AND city != 'Парк-Телеком' GROUP BY type, city, month, month_num, year, update_at1
     UNION ALL
     SELECT 'КТВ' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_ktv) AS ottok_notauto
-    FROM AlexeyReport.summary_nl WHERE auto != 1 GROUP BY type, city, month, month_num, year, update_at1
+    FROM AlexeyReport.summary_nl WHERE auto != 1 AND city != 'Парк-Телеком' GROUP BY type, city, month, month_num, year, update_at1
     UNION ALL
     SELECT 'Телефония' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_tel) AS ottok_notauto
-    FROM AlexeyReport.summary_nl WHERE auto != 1 GROUP BY type, city, month, month_num, year, update_at1
+    FROM AlexeyReport.summary_nl WHERE auto != 1 AND city != 'Парк-Телеком' GROUP BY type, city, month, month_num, year, update_at1
     UNION ALL
     SELECT 'ОТТ' AS serv, type, city, month, month_num, year, update_at1, SUM(serv_ott) AS ottok_notauto
-    FROM AlexeyReport.summary_nl WHERE auto != 1 GROUP BY type, city, month, month_num, year, update_at1
+    FROM AlexeyReport.summary_nl WHERE auto != 1 AND city != 'Парк-Телеком' GROUP BY type, city, month, month_num, year, update_at1
 ) tn ON a.city = tn.city AND a.serv = tn.serv AND a.month_num = tn.month_num AND a.year = tn.year AND a.type = tn.type
 LEFT JOIN (
     SELECT 
@@ -107,6 +107,7 @@ LEFT JOIN (
         SUM(value) AS plan
     FROM AlexeyReport.outflow
     WHERE service IN ('Интернет', 'КТВ', 'ТВ', 'Телефония', 'ОТТ')
+      AND city != 'Парк-Телеком'
     GROUP BY city, CASE WHEN service IN ('ТВ', 'КТВ') THEN 'КТВ' ELSE service END, month, year, type
 ) p ON a.city = p.city AND a.serv = p.serv AND a.month_num = p.month_num AND a.year = p.year AND a.type = p.type;
 
