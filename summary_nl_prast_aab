@@ -1,0 +1,265 @@
+CREATE DEFINER=`myuser`@`%` PROCEDURE `summary_nl_prast_aab`()
+BEGIN
+DROP TABLE IF EXISTS AlexeyReport.summary_nl_prast_aab;
+
+-- 1. Отток по услугам (сырые данные)
+CREATE TEMPORARY TABLE tmp_outflow_raw AS
+SELECT 
+    prast_pzakr, month_num, month, year, city, type, 'Интернет' AS serv,
+    COALESCE(serv_int, 0) AS ottok
+FROM AlexeyReport.summary_nl
+WHERE COALESCE(serv_int, 0) > 0
+UNION ALL
+SELECT 
+    prast_pzakr, month_num, month, year, city, type, 'КТВ' AS serv,
+    COALESCE(serv_ktv, 0) AS ottok
+FROM AlexeyReport.summary_nl
+WHERE COALESCE(serv_ktv, 0) > 0
+UNION ALL
+SELECT 
+    prast_pzakr, month_num, month, year, city, type, 'Телефония' AS serv,
+    COALESCE(serv_tel, 0) AS ottok
+FROM AlexeyReport.summary_nl
+WHERE COALESCE(serv_tel, 0) > 0
+UNION ALL
+SELECT 
+    prast_pzakr, month_num, month, year, city, type, 'ОТТ' AS serv,
+    COALESCE(serv_ott, 0) AS ottok
+FROM AlexeyReport.summary_nl
+WHERE COALESCE(serv_ott, 0) > 0
+UNION ALL
+SELECT 
+    prast_pzakr, month_num, month, year, city, type, 'АОТ' AS serv,
+    COALESCE(serv_aot, 0) AS ottok
+FROM AlexeyReport.summary_nl
+WHERE COALESCE(serv_aot, 0) > 0;
+
+-- 2. Отток сгруппированный
+CREATE TEMPORARY TABLE tmp_outflow AS
+SELECT 
+    prast_pzakr, month_num, month, year, city, type, serv,
+    SUM(ottok) AS ottok
+FROM tmp_outflow_raw
+GROUP BY prast_pzakr, month_num, month, year, city, type, serv;
+
+-- 3. Маппинг типов
+CREATE TEMPORARY TABLE tmp_type_mapping AS
+SELECT 'Физ лицо' AS type_nl, 'B2C' AS type_aab
+UNION ALL
+SELECT 'Юр лицо', 'B2B'
+UNION ALL
+SELECT 'Предприятия Холдинга', 'B2U';
+
+-- 4. Маппинг услуг
+CREATE TEMPORARY TABLE tmp_serv_mapping AS
+SELECT 'Интернет' AS serv_nl, 'Интернет' AS serv_aab
+UNION ALL
+SELECT 'КТВ', 'КТВ'
+UNION ALL
+SELECT 'Телефония', 'Телефония'
+UNION ALL
+SELECT 'ОТТ', 'ОТТ'
+UNION ALL
+SELECT 'АОТ', 'АОТ';
+
+-- 5. Последний срез AAB
+CREATE TEMPORARY TABLE tmp_last_update AS
+SELECT 
+    a.city, a.month, a.year, a.Type, a.serv,
+    MAX(a.update_at) AS max_update_at
+FROM AlexeyReport.aa1_summ a
+GROUP BY a.city, a.month, a.year, a.Type, a.serv;
+
+-- 6. AAB city + type + serv
+CREATE TEMPORARY TABLE tmp_aab_city_type_serv AS
+SELECT 
+    a.city, a.month, a.year,
+    tm.type_nl AS type,
+    sm.serv_nl AS serv,
+    SUM(CAST(a.Value AS DECIMAL(10,0))) AS aab
+FROM AlexeyReport.aa1_summ a
+INNER JOIN tmp_last_update lu 
+    ON a.city = lu.city AND a.month = lu.month AND a.year = lu.year 
+    AND a.Type = lu.Type AND a.serv = lu.serv AND a.update_at = lu.max_update_at
+INNER JOIN tmp_type_mapping tm ON a.Type = tm.type_aab
+INNER JOIN tmp_serv_mapping sm ON a.serv = sm.serv_aab
+GROUP BY a.city, a.month, a.year, tm.type_nl, sm.serv_nl;
+
+-- Индексы
+CREATE INDEX idx_aab_cts ON tmp_aab_city_type_serv (city, month, year, type, serv);
+CREATE INDEX idx_outflow ON tmp_outflow (city, month_num, year, type, serv, prast_pzakr);
+
+-- 7. Производные агрегаты AAB
+CREATE TEMPORARY TABLE tmp_aab_city_type AS
+SELECT city, month, year, type, SUM(aab) AS aab
+FROM tmp_aab_city_type_serv
+GROUP BY city, month, year, type;
+
+CREATE TEMPORARY TABLE tmp_aab_city_serv AS
+SELECT city, month, year, serv, SUM(aab) AS aab
+FROM tmp_aab_city_type_serv
+GROUP BY city, month, year, serv;
+
+CREATE TEMPORARY TABLE tmp_aab_city_all AS
+SELECT city, month, year, SUM(aab) AS aab
+FROM tmp_aab_city_type_serv
+GROUP BY city, month, year;
+
+CREATE TEMPORARY TABLE tmp_aab_total_type_serv AS
+SELECT month, year, type, serv, SUM(aab) AS aab
+FROM tmp_aab_city_type_serv
+GROUP BY month, year, type, serv;
+
+CREATE TEMPORARY TABLE tmp_aab_total_type AS
+SELECT month, year, type, SUM(aab) AS aab
+FROM tmp_aab_city_type_serv
+GROUP BY month, year, type;
+
+CREATE TEMPORARY TABLE tmp_aab_total_serv AS
+SELECT month, year, serv, SUM(aab) AS aab
+FROM tmp_aab_city_type_serv
+GROUP BY month, year, serv;
+
+CREATE TEMPORARY TABLE tmp_aab_total_all AS
+SELECT month, year, SUM(aab) AS aab
+FROM tmp_aab_city_type_serv
+GROUP BY month, year;
+
+-- 8. Финальная сборка в постоянную таблицу
+CREATE TABLE AlexeyReport.summary_nl_prast_aab AS
+SELECT 
+    prast_pzakr,
+    month_num,
+    month,
+    year,
+    city,
+    type,
+    serv,
+    ottok,
+    aab,
+    CASE 
+        WHEN aab = 0 THEN NULL 
+        ELSE ROUND(ottok / aab, 5) 
+    END AS churn_rate_pct
+FROM (
+    -- c1: city + type + serv
+    SELECT 
+        o.prast_pzakr, o.month_num, o.month, o.year,
+        o.city, o.type, o.serv,
+        o.ottok,
+        COALESCE(acts.aab, 0) AS aab
+    FROM tmp_outflow o
+    LEFT JOIN tmp_aab_city_type_serv acts
+        ON o.city = acts.city AND o.month_num = acts.month AND o.year = acts.year
+        AND o.type = acts.type AND o.serv = acts.serv
+
+    UNION ALL
+
+    -- c2: !Все города + type + serv
+    SELECT 
+        o.prast_pzakr, o.month_num, o.month, o.year,
+        '!Все города' AS city, o.type, o.serv,
+        SUM(o.ottok) AS ottok,
+        COALESCE(atts.aab, 0) AS aab
+    FROM tmp_outflow o
+    LEFT JOIN tmp_aab_total_type_serv atts
+        ON o.month_num = atts.month AND o.year = atts.year
+        AND o.type = atts.type AND o.serv = atts.serv
+    GROUP BY o.prast_pzakr, o.month_num, o.month, o.year, o.type, o.serv, atts.aab
+
+    UNION ALL
+
+    -- c3: city + type + Все услуги
+    SELECT 
+        o.prast_pzakr, o.month_num, o.month, o.year,
+        o.city, o.type, 'Все услуги' AS serv,
+        SUM(o.ottok) AS ottok,
+        COALESCE(act.aab, 0) AS aab
+    FROM tmp_outflow o
+    LEFT JOIN tmp_aab_city_type act
+        ON o.city = act.city AND o.month_num = act.month AND o.year = act.year
+        AND o.type = act.type
+    GROUP BY o.prast_pzakr, o.month_num, o.month, o.year, o.city, o.type, act.aab
+
+    UNION ALL
+
+    -- c4: !Все города + type + Все услуги
+    SELECT 
+        o.prast_pzakr, o.month_num, o.month, o.year,
+        '!Все города' AS city, o.type, 'Все услуги' AS serv,
+        SUM(o.ottok) AS ottok,
+        COALESCE(att.aab, 0) AS aab
+    FROM tmp_outflow o
+    LEFT JOIN tmp_aab_total_type att
+        ON o.month_num = att.month AND o.year = att.year AND o.type = att.type
+    GROUP BY o.prast_pzakr, o.month_num, o.month, o.year, o.type, att.aab
+
+    UNION ALL
+
+    -- c5: city + Все лица + serv
+    SELECT 
+        o.prast_pzakr, o.month_num, o.month, o.year,
+        o.city, 'Все лица' AS type, o.serv,
+        SUM(o.ottok) AS ottok,
+        COALESCE(acs.aab, 0) AS aab
+    FROM tmp_outflow o
+    LEFT JOIN tmp_aab_city_serv acs
+        ON o.city = acs.city AND o.month_num = acs.month AND o.year = acs.year
+        AND o.serv = acs.serv
+    GROUP BY o.prast_pzakr, o.month_num, o.month, o.year, o.city, o.serv, acs.aab
+
+    UNION ALL
+
+    -- c6: !Все города + Все лица + serv
+    SELECT 
+        o.prast_pzakr, o.month_num, o.month, o.year,
+        '!Все города' AS city, 'Все лица' AS type, o.serv,
+        SUM(o.ottok) AS ottok,
+        COALESCE(ats.aab, 0) AS aab
+    FROM tmp_outflow o
+    LEFT JOIN tmp_aab_total_serv ats
+        ON o.month_num = ats.month AND o.year = ats.year AND o.serv = ats.serv
+    GROUP BY o.prast_pzakr, o.month_num, o.month, o.year, o.serv, ats.aab
+
+    UNION ALL
+
+    -- c7: city + Все лица + Все услуги
+    SELECT 
+        o.prast_pzakr, o.month_num, o.month, o.year,
+        o.city, 'Все лица' AS type, 'Все услуги' AS serv,
+        SUM(o.ottok) AS ottok,
+        COALESCE(aca.aab, 0) AS aab
+    FROM tmp_outflow o
+    LEFT JOIN tmp_aab_city_all aca
+        ON o.city = aca.city AND o.month_num = aca.month AND o.year = aca.year
+    GROUP BY o.prast_pzakr, o.month_num, o.month, o.year, o.city, aca.aab
+
+    UNION ALL
+
+    -- c8: !Все города + Все лица + Все услуги
+    SELECT 
+        o.prast_pzakr, o.month_num, o.month, o.year,
+        '!Все города' AS city, 'Все лица' AS type, 'Все услуги' AS serv,
+        SUM(o.ottok) AS ottok,
+        COALESCE(ata.aab, 0) AS aab
+    FROM tmp_outflow o
+    LEFT JOIN tmp_aab_total_all ata
+        ON o.month_num = ata.month AND o.year = ata.year
+    GROUP BY o.prast_pzakr, o.month_num, o.month, o.year, ata.aab
+) AS combined;
+
+-- 9. Прибираемся
+DROP TEMPORARY TABLE IF EXISTS tmp_outflow_raw;
+DROP TEMPORARY TABLE IF EXISTS tmp_outflow;
+DROP TEMPORARY TABLE IF EXISTS tmp_type_mapping;
+DROP TEMPORARY TABLE IF EXISTS tmp_serv_mapping;
+DROP TEMPORARY TABLE IF EXISTS tmp_last_update;
+DROP TEMPORARY TABLE IF EXISTS tmp_aab_city_type_serv;
+DROP TEMPORARY TABLE IF EXISTS tmp_aab_city_type;
+DROP TEMPORARY TABLE IF EXISTS tmp_aab_city_serv;
+DROP TEMPORARY TABLE IF EXISTS tmp_aab_city_all;
+DROP TEMPORARY TABLE IF EXISTS tmp_aab_total_type_serv;
+DROP TEMPORARY TABLE IF EXISTS tmp_aab_total_type;
+DROP TEMPORARY TABLE IF EXISTS tmp_aab_total_serv;
+DROP TEMPORARY TABLE IF EXISTS tmp_aab_total_all;
+END
