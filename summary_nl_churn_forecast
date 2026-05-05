@@ -1,0 +1,96 @@
+CREATE DEFINER=`myuser`@`%` PROCEDURE `summary_nl_churn_forecast`()
+BEGIN
+DROP TABLE IF EXISTS AlexeyReport.summary_nl_churn_forecast;
+
+CREATE TABLE AlexeyReport.summary_nl_churn_forecast AS
+SELECT 
+    a.serv,
+    a.type,
+    a.city,
+    a.year,
+    a.total_ottok_fact,
+    l.abonbase AS last_month_abonbase,
+    -- Старый расчёт: фактический отток / последняя ААБ
+    CASE 
+        WHEN l.abonbase > 0 THEN ROUND(a.total_ottok_fact / l.abonbase, 6)
+        ELSE 0 
+    END AS fact_ottok_abonbase_ratio,
+    -- Новый расчёт: годовой прогноз оттока
+    CASE 
+        WHEN CAST(a.year AS UNSIGNED) = YEAR(CURDATE()) AND a.months_count > 0 THEN
+            ROUND((a.total_ottok_forecast / a.months_count) * 12, 2)
+        ELSE 
+            ROUND(a.total_ottok_forecast, 2)
+    END AS yearly_forecast_ottok,
+    -- Новый расчёт: прогнозный отток / последняя ААБ
+    CASE 
+        WHEN l.abonbase > 0 THEN
+            CASE 
+                WHEN CAST(a.year AS UNSIGNED) = YEAR(CURDATE()) AND a.months_count > 0 THEN
+                    ROUND(((a.total_ottok_forecast / a.months_count) * 12) / l.abonbase, 6)
+                ELSE 
+                    ROUND(a.total_ottok_forecast / l.abonbase, 6)
+            END
+        ELSE 0 
+    END AS forecast_ottok_abonbase_ratio
+FROM (
+    SELECT 
+        serv,
+        type,
+        city,
+        year,
+        SUM(CAST(ottok AS DECIMAL(10,2))) AS total_ottok_fact,
+        SUM(
+            CASE 
+                WHEN CAST(year AS UNSIGNED) = YEAR(CURDATE()) 
+                     AND CAST(month_num AS UNSIGNED) = MONTH(CURDATE()) THEN
+                    ROUND(
+                        (COALESCE(CAST(ottok_notauto AS DECIMAL(10,2)), 0) 
+                         / NULLIF(DAY(CURDATE()) - 1, 0)) 
+                        * DAY(LAST_DAY(CURDATE())) 
+                        + (COALESCE(CAST(ottok AS DECIMAL(10,2)), 0) 
+                           - COALESCE(CAST(ottok_notauto AS DECIMAL(10,2)), 0)),
+                        2
+                    )
+                ELSE 
+                    CAST(ottok AS DECIMAL(10,2))
+            END
+        ) AS total_ottok_forecast,
+        COUNT(DISTINCT month_num) AS months_count
+    FROM AlexeyReport.summary_nl_aab
+    GROUP BY serv, type, city, year
+) a
+LEFT JOIN (
+    SELECT 
+        m1.serv,
+        m1.type,
+        m1.city,
+        m1.year,
+        CAST(m1.abonbase AS DECIMAL(10,2)) AS abonbase
+    FROM AlexeyReport.summary_nl_aab m1
+    INNER JOIN (
+        SELECT 
+            serv, 
+            type, 
+            city, 
+            year, 
+            MAX(CAST(month_num AS UNSIGNED)) AS max_month
+        FROM AlexeyReport.summary_nl_aab
+        GROUP BY serv, type, city, year
+    ) m2 
+        ON m1.serv = m2.serv 
+        AND m1.type = m2.type 
+        AND m1.city = m2.city 
+        AND m1.year = m2.year 
+        AND CAST(m1.month_num AS UNSIGNED) = m2.max_month
+) l 
+    ON a.serv = l.serv 
+    AND a.type = l.type 
+    AND a.city = l.city 
+    AND a.year = l.year
+ORDER BY 
+    a.year DESC,
+    a.serv,
+    a.type,
+    a.city;
+END
